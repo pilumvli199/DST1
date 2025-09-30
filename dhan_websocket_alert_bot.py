@@ -3,8 +3,9 @@ import time
 import requests
 import logging
 
-# योग्य dhanhq क्लास आणि कॉन्स्टंट्स इम्पोर्ट करा
-from dhanhq import DhanFeed, Ticker, NSE
+# योग्य dhanhq क्लास आणि कॉन्स्टंट्स इम्पोर्ट करा (येथे बदल केला आहे)
+from dhanhq import DhanFeed
+from dhanhq.marketfeed import NSE
 
 # --- १. कॉन्फिगरेशन (Configuration) ---
 # हे व्हेरिएबल्स तुमच्या Railway किंवा लोकल एनवायरमेंटमध्ये सेट करा
@@ -20,7 +21,7 @@ SEND_INTERVAL_SECONDS = 60
 
 # ज्या स्क्रिप्ट्सचा डेटा हवा आहे, त्यांची लिस्ट
 instruments = [
-    (NSE, HDFC_ID)  # Ticker ची गरज नाही, फक्त Exchange आणि Security ID लागतो
+    (NSE, HDFC_ID)
 ]
 
 # डेटा साठवण्यासाठी ग्लोबल व्हेरिएबल्स
@@ -36,7 +37,6 @@ def send_telegram_message(ltp_price):
     
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S IST")
     
-    # ॲलर्ट फॉर्मॅटमध्ये मेसेज तयार करा
     message = (
         f"🔔 *HDFC BANK LTP ALERT!* 🔔\n\n"
         f"**वेळ:** {timestamp}\n"
@@ -52,9 +52,9 @@ def send_telegram_message(ltp_price):
     }
     try:
         response = requests.post(url, data=payload, timeout=10)
-        response.raise_for_status() # HTTP एरर आल्यास Exception raise होईल
+        response.raise_for_status()
         logging.info(f"Telegram alert sent: HDFCBANK LTP @ ₹{ltp_price:.2f}")
-        last_telegram_send_time = time.time()  # वेळ अपडेट करा
+        last_telegram_send_time = time.time()
     except requests.exceptions.RequestException as e:
         logging.error(f"Error sending Telegram message: {e}")
 
@@ -62,13 +62,9 @@ def send_telegram_message(ltp_price):
 def on_message(message):
     """WebSocket कडून डेटा मिळाल्यावर हा फंक्शन आपोआप कॉल होतो."""
     try:
-        # message['type'] == 'Ticker' असेल तरच तो लाईव्ह फीड आहे
         if message.get('type') == 'Ticker' and message.get('security_id') == HDFC_ID:
             ltp = message.get('ltp')
             if ltp is not None:
-                # logging.info(f"Received LTP for HDFCBANK: {ltp}")
-                
-                # Telegram मेसेज पाठवण्याची वेळ झाली आहे का ते तपासा
                 current_time = time.time()
                 if current_time - last_telegram_send_time >= SEND_INTERVAL_SECONDS:
                     send_telegram_message(ltp)
@@ -87,12 +83,11 @@ def on_error(error):
 def start_market_feed():
     """Dhan Market Feed WebSocket कनेक्शन सुरू करते."""
     if not all([CLIENT_ID, ACCESS_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
-        logging.error("Environment variables missing. Please set DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID.")
+        logging.error("Environment variables missing. Please set all required variables.")
         return
 
     logging.info("Starting DhanHQ WebSocket Service for HDFCBANK...")
 
-    # DhanFeed क्लासचा ऑब्जेक्ट तयार करा
     feed = DhanFeed(
         client_id=CLIENT_ID,
         access_token=ACCESS_TOKEN,
@@ -102,7 +97,6 @@ def start_market_feed():
         on_error=on_error
     )
     
-    # कनेक्शन कायमस्वरूपी चालू ठेवा
     feed.run_forever()
 
 if __name__ == "__main__":
