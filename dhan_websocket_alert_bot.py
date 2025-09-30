@@ -6,17 +6,15 @@ import logging
 from dhanhq import DhanFeed
 from dhanhq.marketfeed import NSE
 
-# --- १. कॉन्फिगरेशन (Configuration) ---
+# --- 1. कॉन्फिगरेशन (Configuration) ---
 CLIENT_ID = os.environ.get("DHAN_CLIENT_ID")
 ACCESS_TOKEN = os.environ.get("DHAN_ACCESS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- Reliance ID सह बदल (Change to Reliance ID) ---
-STOCK_ID = '2885'  # Reliance चा Security ID
-STOCK_NAME = "RELIANCE"
-# ----------------------------------------------------
-
+# HDFC Bank ID सह
+STOCK_ID = '1333'
+STOCK_NAME = "HDFCBANK"
 SEND_INTERVAL_SECONDS = 60
 
 # ज्या स्क्रिप्टचा डेटा हवा आहे, त्याची लिस्ट
@@ -27,13 +25,12 @@ instruments = [
 last_telegram_send_time = time.time()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- २. Telegram फंक्शन ---
+# --- 2. Telegram फंक्शन ---
 def send_telegram_message(ltp_price):
     global last_telegram_send_time
     
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S IST")
     
-    # मेसेजमध्ये स्टॉकचे नाव ديناميك करण्यासाठी बदल
     message = (
         f"🔔 *{STOCK_NAME} LTP ALERT!* 🔔\n\n"
         f"**वेळ:** {timestamp}\n"
@@ -55,10 +52,11 @@ def send_telegram_message(ltp_price):
     except requests.exceptions.RequestException as e:
         logging.error(f"Error sending Telegram message: {e}")
 
-# --- ३. WebSocket डेटा हँडलर ---
+# --- 3. WebSocket डेटा हँडलर ---
 def on_message(message):
     try:
-        if message.get('type') == 'Ticker' and message.get('security_id') == STOCK_ID:
+        # V2 मध्ये डेटा format थोडा वेगळा असू शकतो, म्हणून 'feed_code' तपासणे सुरक्षित आहे
+        if message.get('feed_code') == 'Ticker' and message.get('security_id') == STOCK_ID:
             ltp = message.get('ltp')
             if ltp is not None:
                 current_time = time.time()
@@ -68,12 +66,12 @@ def on_message(message):
         logging.error(f"Error in on_message handler: {e}")
 
 def on_connect():
-    logging.info(f"DhanHQ Market Feed Connected Successfully! Subscribed to {STOCK_NAME} ({STOCK_ID}).")
+    logging.info(f"DhanHQ WebSocket V2 Feed Connected Successfully! Subscribed to {STOCK_NAME} ({STOCK_ID}).")
 
 def on_error(error):
     logging.error(f"WebSocket Error: {error}")
 
-# --- ४. मुख्य WebSocket कनेक्शन ---
+# --- 4. मुख्य WebSocket कनेक्शन (V2 साठी बदल) ---
 def start_market_feed():
     if not all([CLIENT_ID, ACCESS_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
         logging.error("Environment variables missing. Please set all required variables.")
@@ -81,10 +79,12 @@ def start_market_feed():
 
     logging.info(f"Starting DhanHQ WebSocket Service for {STOCK_NAME}...")
 
+    # WebSocket V2 वापरण्यासाठी 'feed_type' पॅरामीटर वापरा
     feed = DhanFeed(
         client_id=CLIENT_ID,
         access_token=ACCESS_TOKEN,
-        instruments=instruments
+        instruments=instruments,
+        feed_type='v2'  # <-- हा सर्वात महत्त्वाचा बदल आहे!
     )
 
     feed.on_connect = on_connect
