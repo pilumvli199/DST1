@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Robust DhanHQ WebSocket Alert Bot (constructor-signature aware)
-- Inspects feed constructor signature and calls with appropriate args/kwargs
-- Tries multiple 'version' values and common kw names (avoids passing unsupported 'feed_type' etc.)
-- Auto-detects and invokes feed run/start/listen methods
-- Telegram alerts throttled, graceful shutdown, backoff
+Robust DhanHQ WebSocket Alert Bot (fixed syntax)
+- Inspects dhanhq module for feed class
+- Tries multiple constructor signatures and version candidates
+- Tries common run/start signatures
+- Throttled Telegram alerts, graceful shutdown, backoff
 """
 
 import os
 import time
 import logging
 import traceback
-import requests
 import inspect
 from typing import Any, Optional
+
+import requests
 
 # -----------------
 # Config / Env
@@ -126,134 +127,264 @@ def market_feed_handler(message: Any):
         logger.exception("Handler error: %s\n%s", e, traceback.format_exc())
 
 # -----------------
-# Constructor instantiation helper (signature-aware)
+# Constructor helper (simpler, robust)
 # -----------------
-def instantiate_feed(feed_class, client, token, instruments, version_candidates):
+def instantiate_feed_simple(feed_class, client, token, instruments, version_candidates):
     """
-    Try to instantiate feed_class using signature introspection.
-    Returns (instance, used_version) or (None, None).
+    Simpler attempt to instantiate feed_class:
+     - try kwargs with common names
+     - try positional (client, token, instruments)
+     - try adding version kw if supported
+    Returns (instance, used_version) or (None, None)
     """
-    sig = inspect.signature(feed_class)
-    params = sig.parameters
-    param_names = list(params.keys())
-    logger.debug("Constructor parameters: %s", param_names)
+    param_names = []
+    try:
+        sig = inspect.signature(feed_class)
+        param_names = list(sig.parameters.keys())
+        logger.debug("Constructor params: %s", param_names)
+    except Exception:
+        # cannot introspect; we'll try safe positional too
+        param_names = []
 
-    # common kw names mapping attempts
-    common_kw_names = [
-        ("client_id", "access_token", "instruments"),
-        ("clientId", "access_token", "instruments"),
-        ("client", "token", "instruments"),
-        ("client_id", "token", "instruments"),
-        ("client", "access_token", "instruments"),
-        ("client_id", "api_key", "instruments"),
+    # common mappings
+    mappings = [
+        {"client_id": client, "access_token": token, "instruments": instruments},
+        {"clientId": client, "access_token": token, "instruments": instruments},
+        {"client": client, "token": token, "instruments": instruments},
+        {"client_id": client, "token": token, "instruments": instruments},
+        {"client": client, "access_token": token, "instruments": instruments},
     ]
 
-    # candidate version kw names
-    version_kw_names = ["version", "v", "feed_type", "feedType"]
+    version_keys = ["version", "v", "feed_type", "feedType"]
 
-    # try no version first, then versions within version_candidates
-    # We'll attempt permutations:
-    # 1) use kwargs if constructor accepts those names
-    # 2) fallback to positional if number of required params matches
-    tried_exceptions = []
     for ver in version_candidates:
-        # build kwargs based on param presence
-        # attempt each common_kw_names mapping
-        for mapping in common_kw_names:
-            kw = {}
-            # mapping is a tuple like (client_kw, token_kw, instruments_kw)
-            client_kw, token_kw, instr_kw = mapping
-            if client_kw in param_names:
-                kw[client_kw] = client
-            if token_kw in param_names:
-                kw[token_kw] = token
-            if instr_kw in param_names:
-                kw[instr_kw] = instruments
-            # add version if supported and ver not None
+        # try mappings with kw if possible
+        for kw in mappings:
+            kwargs = {}
+            for k, v in kw.items():
+                if not param_names or k in param_names:
+                    kwargs[k] = v
+            # include version if supported
             if ver is not None:
-                for vk in version_kw_names:
-                    if vk in param_names:
-                        kw[vk] = ver
+                for vk in version_keys:
+                    if not param_names or vk in param_names:
+                        kwargs[vk] = ver
                         break
-
-            # if we have nothing to pass, skip mapping
-            if not kw:
+            if not kwargs:
                 continue
-
             try:
-                logger.info("Trying constructor kwargs: %s", list(kw.keys()))
-                inst = feed_class(**kw)
-                logger.info("Instantiated feed via kwargs: %s", list(kw.keys()))
+                logger.info("Trying constructor kwargs: %s", list(kwargs.keys()))
+                inst = feed_class(**kwargs)
+                logger.info("Instantiated feed via kwargs (version=%s)", ver)
                 return inst, ver
-            except TypeError as te:
-                # signature mismatch (unexpected kw) — record and try next mapping
-                logger.debug("Constructor kwargs TypeError: %s", te)
-                tried_exceptions.append(te)
-                continue
+            except TypeError:
+                logger.debug("Constructor kwargs TypeError; will try other forms.")
             except ValueError as ve:
-                # e.g., Unsupported version
-                logger.warning("Constructor raised ValueError: %s", ve)
-                tried_exceptions.append(ve)
-                # If "Unsupported version" in message, break to next ver candidate
+                logger.warning("Constructor ValueError: %s", ve)
                 if "Unsupported version" in str(ve):
-                    logger.info("Detected unsupported version when using kwargs; will try next version candidate.")
+                    # try next version candidate
                     break
-                continue
             except Exception as e:
-                logger.exception("Constructor raised exception with kwargs: %s", e)
-                tried_exceptions.append(e)
-                continue
+                logger.exception("Constructor raised exception: %s", e)
 
-        # fallback: try positional calling if appropriate
-        # Count how many non-default positional-only / required params exist
-        required_params = [p for p in params.values() if p.default is inspect._empty and p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
-        # try forming positional list: [client, token, instruments, ver?] if lengths match
-        for use_ver in (False, True) if ver is not None else (False,):
-            pos_args = []
-            # build pos args list up to required length
-            # common expectation: (client, token, instruments) optionally + version
-            if len(required_params) <= 0:
+        # try simple positional
+        try:
+            if ver is None:
+                logger.info("Trying constructor positional (client, token, instruments)")
+                inst = feed_class(client, token, instruments)
+                logger.info("Instantiated feed via positional (no version).")
+                return inst, None
+            else:
+                logger.info("Trying constructor positional with version: %s", ver)
+                inst = feed_class(client, token, instruments, ver)
+                logger.info("Instantiated feed via positional with version=%s", ver)
+                return inst, ver
+        except TypeError:
+            logger.debug("Positional instantiation TypeError for version %s", ver)
+        except ValueError as ve:
+            logger.warning("Constructor ValueError positional: %s", ve)
+            if "Unsupported version" in str(ve):
                 continue
-            # assemble a candidate
-            pos_args = [client, token, instruments]
-            if use_ver:
-                pos_args.append(ver)
-            try:
-                logger.info("Trying constructor positional args (len=%d)", len(pos_args))
-                inst = feed_class(*pos_args)
-                logger.info("Instantiated feed via positional args (len=%d)", len(pos_args))
-                return inst, ver if use_ver else None
-            except TypeError as te:
-                logger.debug("Positional constructor TypeError: %s", te)
-                tried_exceptions.append(te)
-                continue
-            except ValueError as ve:
-                logger.warning("Constructor positional ValueError: %s", ve)
-                tried_exceptions.append(ve)
-                if "Unsupported version" in str(ve):
-                    logger.info("Unsupported version detected for positional attempt; will try next version candidate.")
-                    break
-                continue
-            except Exception as e:
-                logger.exception("Constructor positional raised exception: %s", e)
-                tried_exceptions.append(e)
-                continue
+        except Exception as e:
+            logger.exception("Positional constructor exception: %s", e)
 
-    # last resort: try very permissive positional with all candidates concatenated (safe attempt)
+    # final fallback: try (client, token) only
     try:
-        logger.info("Final fallback: trying feed_class(client, token, instruments) bare positional.")
-        inst = feed_class(client, token, instruments)
+        inst = feed_class(client, token)
+        logger.info("Instantiated feed via fallback (client, token).")
         return inst, None
     except Exception as e:
-        logger.exception("Final fallback constructor attempt failed: %s", e)
-        tried_exceptions.append(e)
+        logger.exception("Fallback instantiation failed: %s", e)
 
-    logger.error("instantiate_feed: all attempts failed; exceptions: %s", tried_exceptions)
     return None, None
 
 # -----------------
-# Utility to try calling a callable with common signatures
+# try calling run-like methods
 # -----------------
-def try_call_callable(obj, func_name, handler):
-    f = getattr(obj, func_name, None)
-    if not callable
+def try_start_feed_instance(feed):
+    """
+    Try to start/feed-run the feed instance using common methods.
+    Returns (started_bool, error_if_any)
+    """
+    feed_dir = dir(feed)
+    logger.info("feed dir: %s", ", ".join(feed_dir))
+
+    candidates = ["run_forever", "run", "start", "listen", "listen_forever", "serve", "connect_and_listen"]
+    for name in candidates:
+        if name in feed_dir:
+            f = getattr(feed, name)
+            if not callable(f):
+                continue
+            logger.info("Attempting feed.%s()", name)
+            # try common signatures
+            try:
+                # try passing our handler
+                try:
+                    f(market_feed_handler)
+                except TypeError:
+                    try:
+                        f(on_message=market_feed_handler)
+                    except TypeError:
+                        try:
+                            f(callback=market_feed_handler)
+                        except TypeError:
+                            f()
+                logger.info("Invoked %s (may block).", name)
+                return True, None
+            except ValueError as ve:
+                logger.exception("ValueError invoking %s: %s", name, ve)
+                return False, ve
+            except Exception as e:
+                logger.exception("Exception invoking %s: %s", name, e)
+                return True, e
+    return False, None
+
+# -----------------
+# Main start logic
+# -----------------
+def start_market_feed():
+    if not CLIENT_ID or not ACCESS_TOKEN:
+        logger.error("Missing DHAN_CLIENT_ID or DHAN_ACCESS_TOKEN.")
+        return
+
+    try:
+        import dhanhq as dh
+    except Exception as e:
+        logger.exception("Failed to import dhanhq: %s", e)
+        return
+
+    logger.info("dhanhq module contents: %s", ", ".join(dir(dh)))
+    module_obj = getattr(dh, "marketfeed", None) or dh
+
+    # detect feed class
+    feed_class = None
+    for candidate in ("DhanFeed", "MarketFeed", "DhanMarketFeed"):
+        if hasattr(module_obj, candidate):
+            feed_class = getattr(module_obj, candidate)
+            logger.info("Detected feed class: %s", candidate)
+            break
+    if not feed_class:
+        for candidate in ("DhanFeed", "MarketFeed"):
+            if hasattr(dh, candidate):
+                feed_class = getattr(dh, candidate)
+                module_obj = dh
+                logger.info("Detected root-level feed class: %s", candidate)
+                break
+
+    # detect constants
+    NSE = getattr(module_obj, "NSE", getattr(dh, "NSE", None))
+    TICKER = getattr(module_obj, "Ticker", getattr(module_obj, "TICKER", getattr(dh, "Ticker", getattr(dh, "TICKER", None))))
+    if NSE is None or TICKER is None:
+        instruments = [("NSE", HDFC_ID, "TICKER")]
+    else:
+        instruments = [(NSE, HDFC_ID, TICKER)]
+
+    logger.info("Instruments to subscribe: %s", instruments)
+
+    version_candidates = [None, "1", "v1", "v2", "2.0"]
+
+    backoff = INITIAL_BACKOFF
+    while True:
+        try:
+            feed = None
+            used_version = None
+            if feed_class:
+                feed, used_version = instantiate_feed_simple(feed_class, CLIENT_ID, ACCESS_TOKEN, instruments, version_candidates)
+                if not feed:
+                    logger.error("Could not instantiate feed_class for any version candidate.")
+                    logger.info("module_obj dir: %s", ", ".join(dir(module_obj)))
+                    return
+                logger.info("Feed instance created (used_version=%s). type=%s", used_version, type(feed))
+            else:
+                # fallback: module-level function
+                if hasattr(module_obj, "market_feed_wss"):
+                    try:
+                        logger.info("Trying module_obj.market_feed_wss(...) fallback")
+                        # many variants: try with callback kw or positional
+                        try:
+                            module_obj.market_feed_wss(CLIENT_ID, ACCESS_TOKEN, instruments, market_feed_handler)
+                        except TypeError:
+                            module_obj.market_feed_wss(CLIENT_ID, ACCESS_TOKEN, instruments, callback=market_feed_handler)
+                        logger.info("module.market_feed_wss invoked (may block).")
+                        # if it blocks, we assume handler active; sleep briefly and continue
+                        time.sleep(1)
+                        continue
+                    except Exception as e:
+                        logger.exception("market_feed_wss invocation failed: %s", e)
+                logger.error("No feed_class and no working module-level fallback.")
+                return
+
+            # try to start the feed instance
+            started, err = try_start_feed_instance(feed)
+            if started:
+                if isinstance(err, ValueError) and "Unsupported version" in str(err):
+                    # try next version candidate by continuing loop
+                    logger.warning("Unsupported version detected after starting attempt; will retry with other versions.")
+                    # try to cleanup
+                    try:
+                        if hasattr(feed, "disconnect"):
+                            feed.disconnect()
+                        elif hasattr(feed, "close_connection"):
+                            feed.close_connection()
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+                    continue
+                # else: feed invoked (may block). when it returns we'll reconnect (loop)
+                backoff = INITIAL_BACKOFF
+                # small sleep to avoid tight loop if run returned quickly
+                time.sleep(1)
+                continue
+            else:
+                logger.error("Could not start feed instance (no run/start method worked). Dumping diagnostic and exiting.")
+                logger.info("feed dir: %s", ", ".join(dir(feed)))
+                return
+
+        except KeyboardInterrupt:
+            logger.info("KeyboardInterrupt; exiting.")
+            return
+        except Exception as e:
+            logger.exception("Unexpected loop error: %s", e)
+            sleep = min(MAX_BACKOFF, backoff)
+            logger.info("Reconnecting in %.1f s", sleep)
+            time.sleep(sleep)
+            backoff = min(MAX_BACKOFF, backoff * 2 if backoff > 0 else INITIAL_BACKOFF)
+
+# -----------------
+# Signals
+# -----------------
+import signal
+def _signal_handler(sig, frame):
+    logger.info("Signal %s received; exiting.", sig)
+    raise SystemExit()
+
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
+
+# -----------------
+# Main
+# -----------------
+if __name__ == "__main__":
+    logger.info("Starting auto-detect DhanHQ bot; HDFC_ID=%s", HDFC_ID)
+    start_market_feed()
+    logger.info("Bot finished.")
