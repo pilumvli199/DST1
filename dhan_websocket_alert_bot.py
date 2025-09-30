@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Auto-detecting DhanHQ WebSocket Alert Bot
-Attempts to:
- - instantiate DhanFeed (or other feed classes)
- - inspect feed & module for runnable callables
- - try multiple signatures including module.market_feed_wss(...)
- - fallback: log dir() for debugging
+Auto-detecting DhanHQ WebSocket Alert Bot (with version trial)
+Tries multiple constructors and run signatures. If feed raises
+ValueError("Unsupported version: ...") we automatically retry other versions.
 """
 
 import os
@@ -17,7 +14,7 @@ import requests
 import traceback
 import importlib
 from types import ModuleType
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 # -----------------
 # Config / Env
@@ -83,7 +80,6 @@ def send_telegram_message(security_id: str, ltp_price: float, friendly_name: Opt
 latest_ltp = {}
 def market_feed_handler(message: Any):
     try:
-        # handle JSON-like dicts or string/bytes
         if isinstance(message, (bytes, str)):
             import json
             try:
@@ -96,7 +92,6 @@ def market_feed_handler(message: Any):
         if isinstance(message, dict):
             security_id = message.get("securityId") or message.get("symbol") or message.get("security_id") or message.get("s")
             ltp = message.get("lastTradedPrice") or message.get("ltp") or message.get("last_price") or message.get("last")
-            # nested checks
             if not security_id:
                 for k in ("data", "payload", "tick", "update"):
                     nested = message.get(k)
@@ -106,7 +101,6 @@ def market_feed_handler(message: Any):
                         if security_id:
                             break
         else:
-            # attribute-style
             for attr in ("securityId", "symbol", "security_id"):
                 if hasattr(message, attr):
                     security_id = getattr(message, attr)
@@ -132,32 +126,14 @@ def market_feed_handler(message: Any):
         logger.exception("Handler error: %s\n%s", e, traceback.format_exc())
 
 # -----------------
-# Auto-detect & run logic
+# Utility to try calling a callable with common signatures
 # -----------------
 def try_call_callable(obj, func_name, handler):
-    """
-    Try to call obj.func_name with various common signatures.
-    Returns True if call was made (no guaranteed persistence).
-    """
     f = getattr(obj, func_name, None)
     if not callable(f):
-        return False
+        return False, None  # (invoked False, error None)
 
     logger.info("Attempting callable: %s on %s", func_name, type(obj).__name__)
-    # try many signatures
-    variants = [
-        (handler,),  # positional
-        ((), {"on_message": handler}),
-        ((), {"callback": handler}),
-        ((), {"handler": handler}),
-        ((), {"cb": handler}),
-        ((), {"on_message_callback": handler}),
-    ]
-    for pos_args, kw in [(v if isinstance(v, tuple) and len(v)==2 else (v, {})) for v in variants]:
-        # The above expression yields wrong shape; simpler iterate explicitly below
-        pass
-
-    # simpler explicit tries:
     tries = [
         lambda: f(handler),
         lambda: f(on_message=handler),
@@ -170,50 +146,46 @@ def try_call_callable(obj, func_name, handler):
         try:
             t()
             logger.info("Callable %s invoked successfully (may be blocking).", func_name)
-            return True
+            return True, None
         except TypeError as te:
             logger.debug("Signature mismatch for %s: %s", func_name, te)
+            continue
+        except ValueError as ve:
+            # return the ValueError so caller can inspect (e.g., Unsupported version)
+            logger.exception("Callable %s raised ValueError during call: %s", func_name, ve)
+            return True, ve
         except Exception as e:
-            # If it runs and then raises inside, we surface but consider that we invoked it.
             logger.exception("Callable %s raised exception during call: %s", func_name, e)
-            return True
-    return False
+            # treat as invoked (it ran but raised) so return True and the exception
+            return True, e
+    return False, None
 
+# -----------------
+# Start market feed with version trials
+# -----------------
 def start_market_feed():
     if not CLIENT_ID or not ACCESS_TOKEN:
         logger.error("Missing DHAN_CLIENT_ID or DHAN_ACCESS_TOKEN.")
         return
 
-    # import and inspect
     try:
         import dhanhq as dh
     except Exception as e:
         logger.exception("Failed to import dhanhq: %s", e)
         return
 
-    # print module contents
-    try:
-        module_contents = ", ".join(dir(dh))
-        logger.info("dhanhq module contents: %s", module_contents)
-    except Exception:
-        logger.exception("Could not list dhanhq contents")
+    logger.info("dhanhq module contents: %s", ", ".join(dir(dh)))
+    module_obj = getattr(dh, "marketfeed", None) or dh
 
-    # Prefer dh.marketfeed if present
-    module_obj = None
+    # detect feed class
     feed_class = None
-    helpers = {}
-    if hasattr(dh, "marketfeed"):
-        module_obj = dh.marketfeed
-        logger.info("Using dh.marketfeed module")
-        # check common feed classes
-        for candidate in ("DhanFeed", "MarketFeed", "DhanMarketFeed"):
-            if hasattr(module_obj, candidate):
-                feed_class = getattr(module_obj, candidate)
-                logger.info("Detected feed class: %s", candidate)
-                break
-
-    # also check root-level classes
-    if feed_class is None:
+    for candidate in ("DhanFeed", "MarketFeed", "DhanMarketFeed"):
+        if hasattr(module_obj, candidate):
+            feed_class = getattr(module_obj, candidate)
+            logger.info("Detected feed class: %s", candidate)
+            break
+    if not feed_class:
+        # also check root
         for candidate in ("DhanFeed", "MarketFeed"):
             if hasattr(dh, candidate):
                 feed_class = getattr(dh, candidate)
@@ -221,121 +193,121 @@ def start_market_feed():
                 logger.info("Detected root-level feed class: %s", candidate)
                 break
 
-    # prepare instruments using detected constants if possible
+    # detect constants
     NSE = getattr(module_obj, "NSE", getattr(dh, "NSE", None))
     TICKER = getattr(module_obj, "Ticker", getattr(module_obj, "TICKER", getattr(dh, "Ticker", getattr(dh, "TICKER", None))))
     if NSE is None or TICKER is None:
         instruments = [("NSE", HDFC_ID, "TICKER")]
     else:
         instruments = [(NSE, HDFC_ID, TICKER)]
+
     logger.info("Instruments to subscribe: %s", instruments)
+
+    # versions to try: prefer no-version, then '1'/'v1', then '2.0' as last
+    version_candidates = [None, "1", "v1", "2.0", "v2"]
 
     backoff = INITIAL_BACKOFF
     while True:
         try:
             feed = None
-            if feed_class:
+            invoked_any = False
+            # If we have a feed_class, try multiple version candidates
+            for ver in version_candidates:
                 try:
-                    feed = feed_class(CLIENT_ID, ACCESS_TOKEN, instruments, version="2.0")
-                    logger.info("Instantiated feed_class with (client, token, instruments, version).")
-                except TypeError:
-                    try:
-                        feed = feed_class(CLIENT_ID, ACCESS_TOKEN, instruments)
-                        logger.info("Instantiated feed_class with (client, token, instruments).")
-                    except Exception as e:
-                        logger.exception("Failed to instantiate feed_class: %s", e)
-                        feed = None
-                except Exception as e:
-                    logger.exception("Error instantiating feed_class: %s", e)
-                    feed = None
-            else:
-                # fallback: use module-level constructors or functions
-                if hasattr(module_obj, "DhanFeed"):
-                    try:
-                        feed = getattr(module_obj, "DhanFeed")(CLIENT_ID, ACCESS_TOKEN, instruments)
-                        logger.info("Instantiated module_obj.DhanFeed")
-                    except Exception as e:
-                        logger.exception("module_obj.DhanFeed failed: %s", e)
-                elif hasattr(module_obj, "MarketFeed"):
-                    try:
-                        feed = getattr(module_obj, "MarketFeed")(CLIENT_ID, ACCESS_TOKEN, instruments)
-                        logger.info("Instantiated module_obj.MarketFeed")
-                    except Exception as e:
-                        logger.exception("module_obj.MarketFeed failed: %s", e)
-
-            if feed is None:
-                logger.error("Could not create feed instance. Module/class inspection follows.")
-                # log feed_class and module_obj dir for debugging
-                try:
-                    if module_obj:
-                        logger.info("module_obj dir: %s", ", ".join(dir(module_obj)))
-                    logger.info("root dh dir: %s", ", ".join(dir(dh)))
-                except Exception:
-                    pass
-                return
-
-            # Inspect feed for runnable methods
-            feed_dir = dir(feed)
-            logger.info("feed dir: %s", ", ".join(feed_dir))
-
-            # Try common names first
-            tried = False
-            for name in ("run_forever", "run", "start", "listen", "listen_forever", "serve", "connect_and_listen"):
-                if name in feed_dir:
-                    invoked = try_call_callable(feed, name, market_feed_handler)
-                    tried = tried or invoked
-                    if invoked:
-                        # if invoked, assume it blocks; when it returns we'll reconnect
-                        logger.info("Invoked %s on feed; if this is blocking then handler is active.", name)
-                        # sleep a bit to avoid tight loop
-                        time.sleep(1)
-                        break
-
-            if not tried:
-                # try module-level helper market_feed_wss if available
-                if hasattr(module_obj, "market_feed_wss"):
-                    logger.info("Trying module_obj.market_feed_wss(...) as fallback")
-                    try:
-                        # many implementations: market_feed_wss(client, token, instruments, callback)
-                        module_obj.market_feed_wss(CLIENT_ID, ACCESS_TOKEN, instruments, market_feed_handler)
-                        logger.info("Called market_feed_wss; assuming it blocks and is delivering callbacks.")
-                        tried = True
-                        time.sleep(1)
-                    except TypeError:
-                        # try named param
+                    if ver is None:
                         try:
-                            module_obj.market_feed_wss(CLIENT_ID, ACCESS_TOKEN, instruments, callback=market_feed_handler)
-                            logger.info("Called market_feed_wss with callback=...")
-                            tried = True
-                            time.sleep(1)
-                        except Exception as e:
-                            logger.exception("market_feed_wss invocation failed: %s", e)
-                    except Exception as e:
-                        logger.exception("market_feed_wss raised: %s", e)
+                            feed = feed_class(CLIENT_ID, ACCESS_TOKEN, instruments)
+                            logger.info("Instantiated feed_class without version.")
+                        except TypeError:
+                            # some constructors require version param, handle below
+                            feed = None
+                    else:
+                        try:
+                            feed = feed_class(CLIENT_ID, ACCESS_TOKEN, instruments, version=ver)
+                            logger.info("Instantiated feed_class with version=%s", ver)
+                        except TypeError:
+                            # maybe signature expects 'v' or other ordering; try positional fallback
+                            try:
+                                feed = feed_class(CLIENT_ID, ACCESS_TOKEN, instruments, ver)
+                                logger.info("Instantiated feed_class with positional version=%s", ver)
+                            except Exception:
+                                feed = None
+                    if feed:
+                        # Inspect feed methods and attempt to run; capture ValueError for Unsupported version
+                        feed_dir = dir(feed)
+                        logger.info("feed dir: %s", ", ".join(feed_dir))
 
-            if not tried:
-                # Last resort: attempt to detect any callable that looks promising
-                for attr in feed_dir:
-                    low = attr.lower()
-                    if any(token in low for token in ("listen", "run", "start", "connect", "market", "ws", "subscribe")):
-                        invoked = try_call_callable(feed, attr, market_feed_handler)
-                        if invoked:
-                            tried = True
-                            break
+                        # try run methods
+                        for name in ("run_forever", "run", "start", "listen", "listen_forever", "serve", "connect_and_listen"):
+                            if name in feed_dir:
+                                invoked, err = try_call_callable(feed, name, market_feed_handler)
+                                if invoked:
+                                    invoked_any = True
+                                    # if err is ValueError and message contains Unsupported version -> break and try next version
+                                    if isinstance(err, ValueError) and "Unsupported version" in str(err):
+                                        logger.warning("Detected Unsupported version for version=%s -> trying next candidate", ver)
+                                        invoked_any = False
+                                        # break inner loop to try next ver
+                                        break
+                                    # else assume feed is running/blocked and keep monitoring; after it returns we'll reconnect
+                                    time.sleep(1)
+                                    break
+                        if invoked_any:
+                            break  # exit version loop; feed running
+                        # If not invoked, try module-level market_feed_wss
+                        if not invoked_any and hasattr(module_obj, "market_feed_wss"):
+                            try:
+                                logger.info("Trying module.market_feed_wss with version=%s", ver)
+                                # try multiple signatures
+                                try:
+                                    module_obj.market_feed_wss(CLIENT_ID, ACCESS_TOKEN, instruments, market_feed_handler)
+                                    invoked_any = True
+                                except TypeError:
+                                    try:
+                                        module_obj.market_feed_wss(CLIENT_ID, ACCESS_TOKEN, instruments, callback=market_feed_handler)
+                                        invoked_any = True
+                                    except Exception as e:
+                                        logger.exception("market_feed_wss call failed: %s", e)
+                                if invoked_any:
+                                    time.sleep(1)
+                                    break
+                            except Exception as e:
+                                logger.exception("market_feed_wss raised: %s", e)
+                        # if invoked_any triggered by Unsupported version earlier we continue to next version
+                        if not invoked_any:
+                            # if the feed object existed but no runnable method worked for this version, try next version
+                            logger.info("No runnable method succeeded for version=%s; trying next version candidate.", ver)
+                            # before trying next version, if feed provides disconnect/close, attempt cleanup
+                            try:
+                                if hasattr(feed, "disconnect"):
+                                    feed.disconnect()
+                                elif hasattr(feed, "close_connection"):
+                                    feed.close_connection()
+                            except Exception:
+                                pass
+                            feed = None
+                            continue  # next version
+                except Exception as top_e:
+                    # If instantiation or invocation raised ValueError('Unsupported version') at module level, catch and continue
+                    logger.exception("Error while trying version=%s : %s", ver, top_e)
+                    # detect Unsupported version message
+                    if isinstance(top_e, ValueError) and "Unsupported version" in str(top_e):
+                        logger.warning("Unsupported version exception for candidate %s; trying next", ver)
+                        continue
+                    # otherwise continue trying other versions too
+                    continue
 
-            if not tried:
-                # Nothing worked — dump diagnostic info and exit (so user can inspect logs)
-                logger.error("No runnable entrypoint found on feed or module. Dumping diagnostics:")
+            if not invoked_any:
+                logger.error("Failed to find a working run/start for any tried versions. Dumping diagnostics and exiting.")
                 try:
                     logger.info("dhanhq module dir: %s", ", ".join(dir(dh)))
+                    if module_obj:
+                        logger.info("marketfeed/module dir: %s", ", ".join(dir(module_obj)))
                 except Exception:
                     pass
-                logger.info("feed object type: %s", type(feed))
-                logger.info("feed dir: %s", ", ".join(feed_dir))
                 return
 
-            # if we get here, we've invoked a callable and it likely is blocking delivering callbacks.
-            # After it returns, we'll try reconnecting (loop).
+            # If we invoked a run method that likely blocks, when it returns we'll loop and reconnect
             backoff = INITIAL_BACKOFF
 
         except KeyboardInterrupt:
