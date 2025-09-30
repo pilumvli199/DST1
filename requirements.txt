@@ -1,3 +1,2 @@
 dhanhq
-requests>=2.28
-python-dotenv>=1.0.0
+requests
