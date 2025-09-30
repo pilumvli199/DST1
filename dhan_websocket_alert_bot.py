@@ -14,8 +14,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Segment: NSE (Equity), Security ID: 1333
 HDFC_ID = '1333'
 instruments = [
-    # इथे 'marketfeed' वापरले आहे
-    (marketfeed.NSE, HDFC_ID, marketfeed.TICKER) # Ticker (LTP) साठी 1
+    # Ticker Subscription साठी 'marketfeed.Ticker' वापरले आहे.
+    (marketfeed.NSE, HDFC_ID, marketfeed.Ticker) # Ticker (LTP) साठी 1
 ]
 
 # डेटा साठवण्यासाठी ग्लोबल व्हेरिएबल्स
