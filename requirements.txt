@@ -1,1 +1,2 @@
-
+dhanhq>=1.0
+requests
