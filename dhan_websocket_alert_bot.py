@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from dhanhq.marketfeed import marketfeed # <--- आता 'marketfeed' (लहान) क्लास इम्पोर्ट केला
+from dhanhq.marketfeed import MarketFeed # <--- आता 'MarketFeed' (कॅपिटल M) क्लास इम्पोर्ट केला
 
 # --- १. कॉन्फिगरेशन (Configuration) ---
 # Environment Variables मधून Secrets ॲक्सेस केले जातील.
@@ -14,8 +14,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Segment: NSE (Equity), Security ID: 1333
 HDFC_ID = '1333'
 instruments = [
-    # आता 'marketfeed.NSE' आणि 'marketfeed.Ticker' (क्लासच्या नावाप्रमाणे लहान) वापरले
-    (marketfeed.NSE, HDFC_ID, marketfeed.Ticker) # Ticker (LTP) साठी 1
+    # आता 'MarketFeed.NSE' आणि 'MarketFeed.Ticker' (क्लासच्या नावाप्रमाणे कॅपिटल) वापरले
+    (MarketFeed.NSE, HDFC_ID, MarketFeed.Ticker) # Ticker (LTP) साठी
 ]
 
 # डेटा साठवण्यासाठी ग्लोबल व्हेरिएबल्स
@@ -74,15 +74,15 @@ def market_feed_handler(response):
 def start_market_feed():
     """Dhan Market Feed WebSocket कनेक्शन सुरू करते."""
     if not CLIENT_ID or not ACCESS_TOKEN or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Error: Environment Variables (DHAN/TELEGRAM) missing. Please set them in Railway.")
+        print("Error: Environment Variables (DHAN/TELEGRAM) missing. Please set them.")
         return
 
     print("DhanHQ WebSocket Service सुरू होत आहे...")
     print(f"HDFCBANK (ID: {HDFC_ID}) साठी डेटा ॲक्सेस करत आहे.")
 
     try:
-        # ** MarketFeed ऐवजी marketfeed (लहान) क्लास वापरला **
-        market_feed = marketfeed( 
+        # ** MarketFeed (कॅपिटल M) क्लास वापरला **
+        market_feed = MarketFeed( 
             CLIENT_ID, 
             ACCESS_TOKEN, 
             instruments, 
@@ -101,4 +101,3 @@ def start_market_feed():
 
 if __name__ == "__main__":
     start_market_feed()
-
