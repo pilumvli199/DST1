@@ -12,8 +12,11 @@ ACCESS_TOKEN = os.environ.get("DHAN_ACCESS_TOKEN")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-STOCK_ID = '1333'
-STOCK_NAME = "HDFCBANK"
+# --- Reliance ID सह बदल ---
+STOCK_ID = '2885'
+STOCK_NAME = "RELIANCE"
+# ---------------------------
+
 SEND_INTERVAL_SECONDS = 60
 
 instruments = [ (NSE, STOCK_ID) ]
