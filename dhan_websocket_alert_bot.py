@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from dhanhq import MarketFeed # <--- इथे थेट 'MarketFeed' क्लास इम्पोर्ट केला
+from dhanhq.marketfeed import MarketFeed # <--- आता थेट 'dhanhq.marketfeed' मधून क्लास इम्पोर्ट केला
 
 # --- १. कॉन्फिगरेशन (Configuration) ---
 # Environment Variables मधून Secrets ॲक्सेस केले जातील.
@@ -81,7 +81,7 @@ def start_market_feed():
     print(f"HDFCBANK (ID: {HDFC_ID}) साठी डेटा ॲक्सेस करत आहे.")
 
     try:
-        # ** दुरुस्त केलेला बदल: थेट MarketFeed क्लास कॉल केला **
+        # ** MarketFeed क्लास योग्यरित्या उपलब्ध आहे **
         market_feed = MarketFeed( 
             CLIENT_ID, 
             ACCESS_TOKEN, 
