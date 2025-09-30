@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from dhanhq import MarketFeed
+from dhanhq import marketfeed # <--- इथे 'marketfeed' (लहान) वापरले आहे
 
 # --- १. कॉन्फिगरेशन (Configuration) ---
 # Environment Variables मधून Secrets ॲक्सेस केले जातील.
@@ -14,7 +14,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Segment: NSE (Equity), Security ID: 1333
 HDFC_ID = '1333'
 instruments = [
-    (MarketFeed.NSE, HDFC_ID, MarketFeed.TICKER) # Ticker (LTP) साठी 1
+    # इथे 'marketfeed' वापरले आहे
+    (marketfeed.NSE, HDFC_ID, marketfeed.TICKER) # Ticker (LTP) साठी 1
 ]
 
 # डेटा साठवण्यासाठी ग्लोबल व्हेरिएबल्स
@@ -80,7 +81,8 @@ def start_market_feed():
     print(f"HDFCBANK (ID: {HDFC_ID}) साठी डेटा ॲक्सेस करत आहे.")
 
     try:
-        market_feed = MarketFeed(
+        # इथे 'marketfeed' (लहान) क्लास वापरला
+        market_feed = marketfeed(
             CLIENT_ID, 
             ACCESS_TOKEN, 
             instruments, 
@@ -88,7 +90,6 @@ def start_market_feed():
         )
         
         # WebSocket कनेक्शन चालू करा आणि आलेल्या डेटासाठी handler सेट करा
-        # run_forever() मुळे हा कोड सतत चालू राहील.
         market_feed.run_forever(market_feed_handler)
 
     except Exception as e:
