@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from dhanhq.marketfeed import MarketFeed # <--- आता थेट 'dhanhq.marketfeed' मधून क्लास इम्पोर्ट केला
+from dhanhq.marketfeed import marketfeed # <--- आता 'marketfeed' (लहान) क्लास इम्पोर्ट केला
 
 # --- १. कॉन्फिगरेशन (Configuration) ---
 # Environment Variables मधून Secrets ॲक्सेस केले जातील.
@@ -14,8 +14,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # Segment: NSE (Equity), Security ID: 1333
 HDFC_ID = '1333'
 instruments = [
-    # Ticker Subscription साठी 'MarketFeed.Ticker' वापरले आहे. (आता ते MarketFeed क्लासमधून ॲक्सेस केले जाईल)
-    (MarketFeed.NSE, HDFC_ID, MarketFeed.Ticker) # Ticker (LTP) साठी 1
+    # आता 'marketfeed.NSE' आणि 'marketfeed.Ticker' (क्लासच्या नावाप्रमाणे लहान) वापरले
+    (marketfeed.NSE, HDFC_ID, marketfeed.Ticker) # Ticker (LTP) साठी 1
 ]
 
 # डेटा साठवण्यासाठी ग्लोबल व्हेरिएबल्स
@@ -81,8 +81,8 @@ def start_market_feed():
     print(f"HDFCBANK (ID: {HDFC_ID}) साठी डेटा ॲक्सेस करत आहे.")
 
     try:
-        # ** MarketFeed क्लास योग्यरित्या उपलब्ध आहे **
-        market_feed = MarketFeed( 
+        # ** MarketFeed ऐवजी marketfeed (लहान) क्लास वापरला **
+        market_feed = marketfeed( 
             CLIENT_ID, 
             ACCESS_TOKEN, 
             instruments, 
@@ -101,3 +101,4 @@ def start_market_feed():
 
 if __name__ == "__main__":
     start_market_feed()
+
